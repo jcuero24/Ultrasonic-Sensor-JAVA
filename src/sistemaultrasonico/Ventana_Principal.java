@@ -1,140 +1,185 @@
 package sistemaultrasonico;
 
-import java.awt.*;
 import javax.swing.*;
+import java.awt.*;
 import jssc.SerialPort;
 import jssc.SerialPortEvent;
 import jssc.SerialPortEventListener;
 import jssc.SerialPortException;
+import jssc.SerialPortList;
 
 public class Ventana_Principal extends JFrame {
 
     private SerialPort puerto;
-    private JLabel etiquetaDistancia;
-    private Indicador indicador; //  indicador visual
-    private JButton botonEncender, botonApagar; //  botones de control
+    private JLabel labelDistancia;
+    private JButton botonConectar;
+    private JButton botonEncenderLED;
+    private JButton botonApagarLED;
+    private JTextArea areaMensajes;
+    private boolean conectado = false;
 
     public Ventana_Principal() {
-        setTitle("Sistema Ultrasonico - Comunicación Serial JSSC");
+        initComponents();
+    }
+
+    private void initComponents() {
+        setTitle("Sistema Ultrasonico con jSSC");
         setSize(500, 400);
-        setLayout(new BorderLayout());
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setLocationRelativeTo(null);
+        setLayout(new BorderLayout());
 
-        // Etiqueta con el texto de la distancia
-        etiquetaDistancia = new JLabel("Distancia: --- cm", SwingConstants.CENTER);
-        etiquetaDistancia.setFont(new Font("Arial", Font.BOLD, 24));
-        add(etiquetaDistancia, BorderLayout.NORTH);
+        // Panel de controles
+        JPanel panelSuperior = new JPanel(new GridLayout(2, 2, 10, 10));
+        botonConectar = new JButton("Conectar");
+        botonEncenderLED = new JButton("Encender LED");
+        botonApagarLED = new JButton("Apagar LED");
+        labelDistancia = new JLabel("Distancia: --- cm", SwingConstants.CENTER);
+        labelDistancia.setFont(new Font("Arial", Font.BOLD, 18));
 
-        // Indicador visual
-        indicador = new Indicador();
-        add(indicador, BorderLayout.CENTER);
+        panelSuperior.add(botonConectar);
+        panelSuperior.add(labelDistancia);
+        panelSuperior.add(botonEncenderLED);
+        panelSuperior.add(botonApagarLED);
 
-        // Panel con los botones
-        JPanel panelBotones = new JPanel();
-        botonEncender = new JButton("Encender LED");
-        botonApagar = new JButton("Apagar LED");
+        add(panelSuperior, BorderLayout.NORTH);
 
-        botonEncender.addActionListener(e -> enviarComando("1"));
-        botonApagar.addActionListener(e -> enviarComando("0"));
+        // Área de mensajes
+        areaMensajes = new JTextArea();
+        areaMensajes.setEditable(false);
+        add(new JScrollPane(areaMensajes), BorderLayout.CENTER);
 
-        panelBotones.add(botonEncender);
-        panelBotones.add(botonApagar);
-        add(panelBotones, BorderLayout.SOUTH);
-
-        conectarPuerto();
+        // Acciones de botones
+        botonConectar.addActionListener(e -> conectarPuerto());
+        botonEncenderLED.addActionListener(e -> enviarComando('1'));
+        botonApagarLED.addActionListener(e -> enviarComando('0'));
     }
 
     private void conectarPuerto() {
-        puerto = new SerialPort("COM3"); // ️ Cambiar el Arduino usa otro COM
+        if (conectado) {
+            cerrarPuerto();
+            return;
+        }
+
+        String puertoDetectado = detectarPuertoArduino();
+
+        if (puertoDetectado == null) {
+            JOptionPane.showMessageDialog(this,
+                    "️ No se detectó ningún Arduino.\nConéctalo y vuelve a intentarlo.",
+                    "Puerto no encontrado",
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
 
         try {
+            puerto = new SerialPort(puertoDetectado);
             puerto.openPort();
-            puerto.setParams(
-                    SerialPort.BAUDRATE_9600,
+            puerto.setParams(SerialPort.BAUDRATE_9600,
                     SerialPort.DATABITS_8,
                     SerialPort.STOPBITS_1,
-                    SerialPort.PARITY_NONE
-            );
+                    SerialPort.PARITY_NONE);
 
-            // Listener que detecta nuevos datos
-            puerto.addEventListener(new SerialPortEventListener() {
-                @Override
-                public void serialEvent(SerialPortEvent evento) {
-                    if (evento.isRXCHAR()) { // Si hay datos disponibles
-                        try {
-                            String data = puerto.readString(evento.getEventValue());
-                            if (data != null && !data.trim().isEmpty()) {
-                                SwingUtilities.invokeLater(() -> {
-                                    etiquetaDistancia.setText("Distancia: " + data.trim() + " cm");
-                                    try {
-                                        int d = Integer.parseInt(data.trim());
-                                        indicador.setDistancia(d);
-                                    } catch (NumberFormatException ex) {
-                                        System.out.println("Dato inválido: " + data);
-                                    }
-                                });
-                            }
-                        } catch (SerialPortException ex) {
-                            System.out.println("Error al leer datos: " + ex);
-                        }
-                    }
-                }
-            });
+            puerto.addEventListener(new SerialPortReader());
 
-            System.out.println("Conectado correctamente al puerto " + puerto.getPortName());
+            areaMensajes.append(" Conectado al puerto " + puertoDetectado + "\n");
+            botonConectar.setText("Desconectar");
+            conectado = true;
 
         } catch (SerialPortException ex) {
-            JOptionPane.showMessageDialog(this, "No se pudo abrir el puerto: " + ex.getMessage());
+            JOptionPane.showMessageDialog(this,
+                    "Error al conectar el puerto:\n" + ex.getMessage(),
+                    "Error de conexión",
+                    JOptionPane.ERROR_MESSAGE);
         }
     }
 
-    private void enviarComando(String comando) {
+    private String detectarPuertoArduino() {
+        String[] puertosDisponibles = SerialPortList.getPortNames();
+
+        if (puertosDisponibles.length == 0) {
+            areaMensajes.append(" No hay puertos seriales disponibles.\n");
+            return null;
+        }
+
+        areaMensajes.append(" Puertos detectados:\n");
+        for (String puerto : puertosDisponibles) {
+            areaMensajes.append("   - " + puerto + "\n");
+        }
+
+        // Estrategia: buscar un puerto típico de Arduino
+        for (String puerto : puertosDisponibles) {
+            if (puerto.toLowerCase().contains("usb") || puerto.toLowerCase().contains("com")) {
+                areaMensajes.append(" Posible Arduino encontrado en: " + puerto + "\n");
+                return puerto;
+            }
+        }
+
+        return puertosDisponibles[0]; // Si no detecta nada especial, usa el primero
+    }
+
+    private void cerrarPuerto() {
         try {
-            if (puerto.isOpened()) {
-                puerto.writeString(comando);
-                System.out.println("Comando enviado: " + comando);
+            if (puerto != null && puerto.isOpened()) {
+                puerto.closePort();
+                areaMensajes.append(" Puerto desconectado.\n");
             }
         } catch (SerialPortException ex) {
-            System.out.println("Error al enviar comando: " + ex);
+            areaMensajes.append("Error al cerrar puerto: " + ex.getMessage() + "\n");
+        } finally {
+            botonConectar.setText("Conectar");
+            conectado = false;
+        }
+    }
+
+    private void enviarComando(char comando) {
+        if (!conectado) {
+            JOptionPane.showMessageDialog(this, "Primero conecta el puerto.");
+            return;
+        }
+
+        try {
+            puerto.writeByte((byte) comando);
+            areaMensajes.append("️ Enviado comando: " + comando + "\n");
+        } catch (SerialPortException ex) {
+            areaMensajes.append("Error al enviar comando: " + ex.getMessage() + "\n");
+        }
+    }
+
+    private class SerialPortReader implements SerialPortEventListener {
+        @Override
+        public void serialEvent(SerialPortEvent event) {
+            if (event.isRXCHAR() && event.getEventValue() > 0) {
+                try {
+                    String data = puerto.readString(event.getEventValue());
+                    if (data != null) {
+                        SwingUtilities.invokeLater(() -> procesarDato(data.trim()));
+                    }
+                } catch (SerialPortException ex) {
+                    areaMensajes.append("Error al leer datos: " + ex.getMessage() + "\n");
+                }
+            }
+        }
+    }
+
+    private void procesarDato(String data) {
+        areaMensajes.append(" Recibido: " + data + "\n");
+
+        if (data.startsWith("DIST:")) {
+            String valor = data.substring(5);
+            if (!valor.equals("ERROR")) {
+                labelDistancia.setText("Distancia: " + valor + " cm");
+            } else {
+                labelDistancia.setText("Distancia: Error");
+            }
+        } else if (data.startsWith("ACK:LED:ON")) {
+            areaMensajes.append(" LED encendido\n");
+        } else if (data.startsWith("ACK:LED:OFF")) {
+            areaMensajes.append(" LED apagado\n");
+        } else if (data.startsWith("ERR:COMANDO")) {
+            areaMensajes.append("️ Comando inválido recibido\n");
         }
     }
 
     public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> {
-            new Ventana_Principal().setVisible(true);
-        });
-    }
-}
-
-/**
- * Clase para mostrar un círculo que cambia según la distancia
- */
-class Indicador extends JPanel {
-
-    private int distancia = 0;
-
-    public void setDistancia(int d) {
-        this.distancia = d;
-        repaint();
-    }
-
-    @Override
-    protected void paintComponent(Graphics g) {
-        super.paintComponent(g);
-        int ancho = getWidth();
-        int alto = getHeight();
-
-        // Escalamos la distancia a un tamaño visible
-        int radio = Math.min(ancho, alto) / 4 + distancia / 2;
-        if (radio > 150) radio = 150;
-
-        // Cambiamos color según distancia
-        if (distancia < 10) g.setColor(Color.RED);
-        else if (distancia < 25) g.setColor(Color.ORANGE);
-        else g.setColor(Color.GREEN);
-
-        // Dibujar círculo centrado
-        g.fillOval(ancho / 2 - radio / 2, alto / 2 - radio / 2, radio, radio);
+        SwingUtilities.invokeLater(() -> new Ventana_Principal().setVisible(true));
     }
 }
